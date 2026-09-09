@@ -6,6 +6,7 @@ import android.util.Log;
 import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Set;   // ← 新增这一行！
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -79,7 +80,6 @@ public class MainHook implements IXposedHookLoadPackage {
             log("✅ Enter com.android.bluetooth");
             Class<?> adapterServiceCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterService", lpparam.classLoader);
 
-            // 🔴 重点：Hook AdapterService构造，蓝牙服务实例化一定会进这里
             XposedHelpers.findAndHookConstructor(adapterServiceCls, Context.class,
                     new de.robv.android.xposed.XC_MethodHook() {
                         final AtomicBoolean running = new AtomicBoolean(true);
@@ -87,7 +87,6 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void afterHookedMethod(MethodHookParam param) {
                             log("✅ AdapterService constructor called! Bluetooth service started");
 
-                            // 在这里做dump，此时类已经完全加载，一定可以拿到全部方法
                             if(dumped.compareAndSet(false, true)){
                                 log("---------- DUMP AdapterService METHODS ----------");
                                 for(Method m : adapterServiceCls.getDeclaredMethods()){
@@ -108,7 +107,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 log("---------- DUMP END ----------");
                             }
 
-                            // 启动文件轮询线程
                             log("✅ Starting poll thread");
                             new Thread(() -> {
                                 while(running.get()) {
@@ -141,11 +139,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 return;
             }
 
-            Object device = null;
             Object btAdapter = XposedHelpers.callStaticMethod(
                     XposedHelpers.findClass("android.bluetooth.BluetoothAdapter", cl),
                     "getDefaultAdapter");
             Set<?> bondedDevices = (Set<?>) XposedHelpers.callMethod(btAdapter, "getBondedDevices");
+            Object device = null;
             for(Object dev : bondedDevices){
                 String mac = (String) XposedHelpers.callMethod(dev,"getAddress");
                 if(WATCH_MAC.equals(mac)){
@@ -159,7 +157,6 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             log("✅ Found watch device: "+WATCH_MAC);
 
-            // 尝试候选方法
             String[] candidates = {
                     "setProfileConnectionPolicy",
                     "setConnectionPolicy"
