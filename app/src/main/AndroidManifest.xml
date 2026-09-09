@@ -15,7 +15,7 @@
             android:value="93"/>
         <meta-data
             android:name="xposedscope"
-            android:value="com.android.bluetooth"/>
+            android:value="com.miui.carlink"/>
     </application>
 
 </manifest>
