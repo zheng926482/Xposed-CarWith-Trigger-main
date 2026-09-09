@@ -1,13 +1,11 @@
 package com.watchhfp.fix;
 
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
+import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -40,6 +38,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         log("ℹ️ Package loaded: " + lpparam.packageName);
 
+        // ========== Hook com.miui.carlink 捕获CarWith断开 ==========
         if ("com.miui.carlink".equals(lpparam.packageName)) {
             log("✅ Hooked com.miui.carlink");
             XposedHelpers.findAndHookMethod("android.content.ContextWrapper", lpparam.classLoader,
@@ -75,45 +74,49 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
+        // ========== Hook com.android.bluetooth：直接Hook AdapterService构造函数 ==========
         if ("com.android.bluetooth".equals(lpparam.packageName)) {
-            log("✅ Hooked com.android.bluetooth");
-            Class<?> adapterAppCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterApp", lpparam.classLoader);
+            log("✅ Enter com.android.bluetooth");
             Class<?> adapterServiceCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterService", lpparam.classLoader);
 
-            XposedHelpers.findAndHookMethod(adapterAppCls,
-                    "onCreate",
+            // 🔴 重点：Hook AdapterService构造，蓝牙服务实例化一定会进这里
+            XposedHelpers.findAndHookConstructor(adapterServiceCls, Context.class,
                     new de.robv.android.xposed.XC_MethodHook() {
                         final AtomicBoolean running = new AtomicBoolean(true);
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            log("✅ AdapterApp onCreate, starting poll thread");
+                            log("✅ AdapterService constructor called! Bluetooth service started");
+
+                            // 在这里做dump，此时类已经完全加载，一定可以拿到全部方法
+                            if(dumped.compareAndSet(false, true)){
+                                log("---------- DUMP AdapterService METHODS ----------");
+                                for(Method m : adapterServiceCls.getDeclaredMethods()){
+                                    StringBuilder sb = new StringBuilder();
+                                    sb.append(m.getName()).append("(");
+                                    Class<?>[] pts = m.getParameterTypes();
+                                    for(int i=0;i<pts.length;i++){
+                                        if(i>0) sb.append(",");
+                                        sb.append(pts[i].getName());
+                                    }
+                                    sb.append("):").append(m.getReturnType().getName());
+                                    log(sb.toString());
+                                }
+                                log("---------- DUMP AdapterService FIELDS ----------");
+                                for(Field f : adapterServiceCls.getDeclaredFields()){
+                                    log(f.getType().getName() + " " + f.getName());
+                                }
+                                log("---------- DUMP END ----------");
+                            }
+
+                            // 启动文件轮询线程
+                            log("✅ Starting poll thread");
                             new Thread(() -> {
                                 while(running.get()) {
-                                    if(dumped.compareAndSet(false, true)){
-                                        log("========== DUMP AdapterService METHODS ==========");
-                                        for(Method m : adapterServiceCls.getDeclaredMethods()){
-                                            StringBuilder sb = new StringBuilder();
-                                            sb.append(m.getName()).append("(");
-                                            Class<?>[] pts = m.getParameterTypes();
-                                            for(int i=0;i<pts.length;i++){
-                                                if(i>0) sb.append(",");
-                                                sb.append(pts[i].getName());
-                                            }
-                                            sb.append("):").append(m.getReturnType().getName());
-                                            log(sb.toString());
-                                        }
-                                        log("---------- DUMP AdapterService FIELDS ----------");
-                                        for(Field f : adapterServiceCls.getDeclaredFields()){
-                                            log(f.getType().getName() + " " + f.getName());
-                                        }
-                                        log("========== DUMP END ==========");
-                                    }
-
                                     File trigger = new File(TRIGGER_FILE);
                                     long now = System.currentTimeMillis();
                                     if (trigger.exists() && (now - lastRunTs.get()) > COOLDOWN_MS) {
-                                        log("🎯 Trigger file detected, restore HFP, MAC=" + WATCH_MAC);
-                                        restoreWatchHfpPolicy(adapterServiceCls);
+                                        log("🎯 Trigger file detected, restore HFP");
+                                        restoreWatchHfpPolicy(lpparam.classLoader, adapterServiceCls);
                                         lastRunTs.set(now);
                                     }
                                     try {
@@ -123,14 +126,14 @@ public class MainHook implements IXposedHookLoadPackage {
                                     }
                                 }
                                 log("ℹ️ Poll thread exit");
-                            }, "WatchHfpPoll").start();
+                            },"WatchHfpPoll").start();
                         }
                     });
             return;
         }
     }
 
-    private void restoreWatchHfpPolicy(Class<?> adapterServiceCls) {
+    private void restoreWatchHfpPolicy(ClassLoader cl, Class<?> adapterServiceCls) {
         try {
             Object adapterService = XposedHelpers.callStaticMethod(adapterServiceCls, "getAdapterService");
             if (adapterService == null) {
@@ -138,25 +141,25 @@ public class MainHook implements IXposedHookLoadPackage {
                 return;
             }
 
-            BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
-            BluetoothDevice targetDevice = null;
-            Set<BluetoothDevice> paired = btAdapter.getBondedDevices();
-            log("Paired devices count: " + paired.size());
-            for(BluetoothDevice dev : paired){
-                String mac = dev.getAddress();
-                log("Paired: " + mac);
+            Object device = null;
+            Object btAdapter = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("android.bluetooth.BluetoothAdapter", cl),
+                    "getDefaultAdapter");
+            Set<?> bondedDevices = (Set<?>) XposedHelpers.callMethod(btAdapter, "getBondedDevices");
+            for(Object dev : bondedDevices){
+                String mac = (String) XposedHelpers.callMethod(dev,"getAddress");
                 if(WATCH_MAC.equals(mac)){
-                    targetDevice = dev;
+                    device = dev;
                     break;
                 }
             }
-            if(targetDevice == null){
-                logErr("Paired device not found: " + WATCH_MAC, null);
+            if(device == null){
+                logErr("Paired watch device NOT found: "+WATCH_MAC,null);
                 return;
             }
-            log("Found target device: " + targetDevice.getAddress());
+            log("✅ Found watch device: "+WATCH_MAC);
 
-            // 尝试两个常见名字
+            // 尝试候选方法
             String[] candidates = {
                     "setProfileConnectionPolicy",
                     "setConnectionPolicy"
@@ -164,22 +167,21 @@ public class MainHook implements IXposedHookLoadPackage {
             boolean ok = false;
             for(String mName : candidates){
                 try {
-                    int ret = (int) XposedHelpers.callMethod(
-                            adapterService,
+                    int ret = (int) XposedHelpers.callMethod(adapterService,
                             mName,
-                            targetDevice,
+                            device,
                             PROFILE_HEADSET,
                             POLICY_ALLOW
                     );
-                    log("✅ Call " + mName + " success, ret=" + ret);
+                    log("✅ Call "+mName+" success, ret="+ret);
                     ok = true;
                     break;
                 }catch (Throwable e){
-                    log("⚠️ " + mName + " failed: " + e.getMessage());
+                    log("⚠️ "+mName+" failed: "+e.getMessage());
                 }
             }
             if(!ok){
-                logErr("❌ No candidate method succeeded", null);
+                logErr("❌ No candidate method succeeded",null);
             }
         } catch (Throwable e) {
             logErr("❌ restoreWatchHfpPolicy exception", e);
