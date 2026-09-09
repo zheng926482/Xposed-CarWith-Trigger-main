@@ -16,7 +16,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "CarWithHfpFix";
-    private static final String WATCH_MAC_LOWER = "04:24:05:2b:3d:1a";
+    private static final String WATCH_MAC_LOWER = "04:24:05:2B:3D:1A";
     private static final String WATCH_MAC = WATCH_MAC_LOWER.toUpperCase();
     private static final String TRIGGER_FILE = "/data/local/tmp/watch_hfp_trigger";
     private static final int PROFILE_HEADSET = 1;
