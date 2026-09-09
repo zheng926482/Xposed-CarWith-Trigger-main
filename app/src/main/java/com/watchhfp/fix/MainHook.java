@@ -1,10 +1,10 @@
 package com.watchhfp.fix;
 
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.util.Log;
+
+import java.io.File;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XposedBridge;
@@ -16,9 +16,10 @@ import java.lang.reflect.Method;
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "CarWithHfpFix";
     private static final String WATCH_MAC = "04:24:05:2b:3d:1a";
-    private static final String TRIGGER_ACTION = "com.watchhfp.fix.TRIGGER_RESTORE";
+    private static final String TRIGGER_FILE = "/data/local/tmp/watch_hfp_trigger";
     private static final int PROFILE_HEADSET = 1;
     private static final int POLICY_ALLOW = 100;
+    private static final long POLL_INTERVAL_MS = 500;
 
     private static void log(String msg) {
         Log.i(TAG, msg);
@@ -31,30 +32,31 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        // ========== 1. 注入 com.miui.carlink（CarWith） ==========
+        log("ℹ️ Package loaded: " + lpparam.packageName);
+
+        // ========== 1. Hook com.miui.carlink ==========
         if ("com.miui.carlink".equals(lpparam.packageName)) {
-            log("✅ Loaded into com.miui.carlink");
+            log("✅ Hooked com.miui.carlink");
             XposedHelpers.findAndHookMethod("android.content.ContextWrapper", lpparam.classLoader,
                     "sendBroadcast",
                     "android.content.Intent",
                     new de.robv.android.xposed.XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
-                            Intent intent = (Intent) param.args[0];
-                            String action = intent.getAction();
+                            Object intentObj = param.args[0];
+                            String action = (String) XposedHelpers.callMethod(intentObj, "getAction");
                             if ("com.iccoa.carlink.DISCONNECT".equals(action)) {
-                                log("📢 Caught CarWith DISCONNECT, send trigger via root");
+                                log("📢 Caught ICCOA DISCONNECT, write trigger file");
                                 new Thread(() -> {
                                     try {
-                                        // root发送带蓝牙管理员权限的广播，绕过广播白名单
+                                        // root 创建触发文件
                                         Runtime.getRuntime().exec(new String[]{
                                                 "su", "-c",
-                                                "am broadcast -a " + TRIGGER_ACTION +
-                                                        " --receiver-permission android.permission.BLUETOOTH_ADMIN"
+                                                "touch " + TRIGGER_FILE
                                         }).waitFor();
-                                        log("✅ Trigger broadcast sent (root)");
+                                        log("✅ Trigger file created");
                                     } catch (Exception e) {
-                                        logErr("❌ Failed run su broadcast", e);
+                                        logErr("❌ Failed to create trigger file", e);
                                     }
                                 }).start();
                             }
@@ -63,24 +65,38 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
-        // ========== 2. 注入 com.android.bluetooth（蓝牙进程） ==========
+        // ========== 2. Hook com.android.bluetooth.AdapterApp ==========
         if ("com.android.bluetooth".equals(lpparam.packageName)) {
-            log("✅ Loaded into com.android.bluetooth");
-            XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
-                    "onCreate", new de.robv.android.xposed.XC_MethodHook() {
+            log("✅ Hooked com.android.bluetooth");
+            Class<?> adapterAppCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterApp", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(adapterAppCls,
+                    "onCreate",
+                    new de.robv.android.xposed.XC_MethodHook() {
+                        final AtomicBoolean running = new AtomicBoolean(true);
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            Context btContext = (Context) param.thisObject;
-                            IntentFilter filter = new IntentFilter(TRIGGER_ACTION);
-                            // 注册接收器，要求发送方拥有 BLUETOOTH_ADMIN 权限
-                            btContext.registerReceiver(new BroadcastReceiver() {
-                                @Override
-                                public void onReceive(Context context, Intent intent) {
-                                    log("🎯 Received trigger action, restoring watch HFP");
-                                    restoreWatchHfpPolicy(btContext.getClassLoader());
+                            log("✅ AdapterApp onCreate, starting poll thread");
+                            new Thread(() -> {
+                                while(running.get()) {
+                                    File trigger = new File(TRIGGER_FILE);
+                                    if (trigger.exists()) {
+                                        log("🎯 Trigger file detected, restore HFP");
+                                        restoreWatchHfpPolicy(lpparam.classLoader);
+                                        try {
+                                            Runtime.getRuntime().exec(new String[]{"su","-c","rm -f "+TRIGGER_FILE}).waitFor();
+                                            log("✅ Trigger file removed");
+                                        } catch (Exception e) {
+                                            logErr("❌ Cannot delete trigger file", e);
+                                        }
+                                    }
+                                    try {
+                                        Thread.sleep(POLL_INTERVAL_MS);
+                                    } catch (InterruptedException ie) {
+                                        running.set(false);
+                                    }
                                 }
-                            }, filter, "android.permission.BLUETOOTH_ADMIN", null, Context.RECEIVER_EXPORTED);
-                            log("✅ Trigger receiver registered, action=" + TRIGGER_ACTION);
+                                log("ℹ️ Poll thread exit");
+                            },"WatchHfpPoll").start();
                         }
                     });
             return;
@@ -96,7 +112,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     String.class, int.class, int.class
             );
             setPolicyMethod.invoke(dbInstance, WATCH_MAC, PROFILE_HEADSET, POLICY_ALLOW);
-            log("✅ SUCCESS setProfileConnectionPolicy, mac=" + WATCH_MAC + ", policy=" + POLICY_ALLOW);
+            log("✅ setProfileConnectionPolicy OK. MAC:" + WATCH_MAC);
         } catch (Throwable e) {
             logErr("❌ setProfileConnectionPolicy failed", e);
         }
