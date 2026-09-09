@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.zheng926482.xposedcarwithtrigger">
+
+    <application
+        android:allowBackup="true"
+        android:label="@string/app_name">
+
+        <!-- Xposed 模块标识（必须） -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+
+        <!-- 模块描述（必须） -->
+        <meta-data
+            android:name="xposeddescription"
+            android:value="Auto start SaltPlayer when CarWith connected" />
+
+        <!-- 最低 Xposed API 版本（必须） -->
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+
+        <!-- 静态作用域（LSPosed 自动勾选 CarWith） -->
+        <meta-data
+            android:name="xposedscope"
+            android:value="com.miui.carlink" />
+
+    </application>
+
+</manifest>
