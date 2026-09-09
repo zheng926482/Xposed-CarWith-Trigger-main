@@ -1,17 +1,18 @@
 package com.watchhfp.fix;
 
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
-
-import java.lang.reflect.Method;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "CarWithHfpFix";
@@ -49,7 +50,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 log("📢 Caught ICCOA DISCONNECT, write trigger file");
                                 new Thread(() -> {
                                     try {
-                                        // root 创建触发文件
                                         Runtime.getRuntime().exec(new String[]{
                                                 "su", "-c",
                                                 "touch " + TRIGGER_FILE
@@ -81,13 +81,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                     File trigger = new File(TRIGGER_FILE);
                                     if (trigger.exists()) {
                                         log("🎯 Trigger file detected, restore HFP");
-                                        restoreWatchHfpPolicy(lpparam.classLoader);
-                                        try {
-                                            Runtime.getRuntime().exec(new String[]{"su","-c","rm -f "+TRIGGER_FILE}).waitFor();
-                                            log("✅ Trigger file removed");
-                                        } catch (Exception e) {
-                                            logErr("❌ Cannot delete trigger file", e);
-                                        }
+                                        restoreWatchHfpPolicy();
+                                        // 不再在这里su删除！删除交给carlink或者外部
                                     }
                                     try {
                                         Thread.sleep(POLL_INTERVAL_MS);
@@ -103,16 +98,26 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void restoreWatchHfpPolicy(ClassLoader classLoader) {
+    /**
+     * 使用公开API BluetoothAdapter.setProfileConnectionPolicy
+     * 不需要内部BluetoothDatabaseManager
+     */
+    private void restoreWatchHfpPolicy() {
         try {
-            Class<?> dbManagerCls = XposedHelpers.findClass("com.android.bluetooth.BluetoothDatabaseManager", classLoader);
-            Object dbInstance = XposedHelpers.callStaticMethod(dbManagerCls, "getInstance");
-            Method setPolicyMethod = dbManagerCls.getDeclaredMethod(
+            BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
+            if (btAdapter == null) {
+                logErr("btAdapter is null", null);
+                return;
+            }
+            BluetoothDevice device = btAdapter.getRemoteDevice(WATCH_MAC);
+            // 反射调用 setProfileConnectionPolicy，该方法是 @hide
+            XposedHelpers.callMethod(btAdapter,
                     "setProfileConnectionPolicy",
-                    String.class, int.class, int.class
+                    device,
+                    PROFILE_HEADSET,
+                    POLICY_ALLOW
             );
-            setPolicyMethod.invoke(dbInstance, WATCH_MAC, PROFILE_HEADSET, POLICY_ALLOW);
-            log("✅ setProfileConnectionPolicy OK. MAC:" + WATCH_MAC);
+            log("✅ setProfileConnectionPolicy OK via BluetoothAdapter, MAC:" + WATCH_MAC);
         } catch (Throwable e) {
             logErr("❌ setProfileConnectionPolicy failed", e);
         }
