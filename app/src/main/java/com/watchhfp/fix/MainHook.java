@@ -1,10 +1,12 @@
 package com.watchhfp.fix;
 
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -36,7 +38,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         log("ℹ️ Package loaded: " + lpparam.packageName);
 
-        // ========== 1. Hook com.miui.carlink ==========
+        // Hook com.miui.carlink
         if ("com.miui.carlink".equals(lpparam.packageName)) {
             log("✅ Hooked com.miui.carlink");
             XposedHelpers.findAndHookMethod("android.content.ContextWrapper", lpparam.classLoader,
@@ -72,7 +74,7 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
-        // ========== 2. Hook com.android.bluetooth ==========
+        // Hook bluetooth process
         if ("com.android.bluetooth".equals(lpparam.packageName)) {
             log("✅ Hooked com.android.bluetooth");
             Class<?> adapterAppCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterApp", lpparam.classLoader);
@@ -91,7 +93,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     long now = System.currentTimeMillis();
                                     if (trigger.exists() && (now - lastRunTs.get()) > COOLDOWN_MS) {
                                         log("🎯 Trigger file detected, restore HFP, MAC=" + WATCH_MAC);
-                                        restoreWatchHfpPolicy(lpparam.classLoader, adapterServiceCls);
+                                        restoreWatchHfpPolicy(adapterServiceCls);
                                         lastRunTs.set(now);
                                     }
                                     try {
@@ -108,29 +110,36 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void restoreWatchHfpPolicy(ClassLoader cl, Class<?> adapterServiceCls) {
+    private void restoreWatchHfpPolicy(Class<?> adapterServiceCls) {
         try {
-            // 获取 AdapterService 单例: AdapterService.getAdapterService()
             Object adapterService = XposedHelpers.callStaticMethod(adapterServiceCls, "getAdapterService");
             if (adapterService == null) {
                 logErr("AdapterService instance is null", null);
                 return;
             }
-            // 构造 BluetoothDevice
-            Object device = XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.bluetooth.BluetoothDevice", cl),
-                    "getRemoteDevice",
-                    WATCH_MAC
-            );
-            // 调用内部方法 setProfileConnectionPolicy
+
+            BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
+            BluetoothDevice targetDevice = null;
+            Set<BluetoothDevice> paired = btAdapter.getBondedDevices();
+            for(BluetoothDevice dev : paired){
+                if(WATCH_MAC.equals(dev.getAddress())){
+                    targetDevice = dev;
+                    break;
+                }
+            }
+            if(targetDevice == null){
+                logErr("Paired device not found: " + WATCH_MAC, null);
+                return;
+            }
+
             int ret = (int) XposedHelpers.callMethod(
                     adapterService,
                     "setProfileConnectionPolicy",
-                    device,
+                    targetDevice,
                     PROFILE_HEADSET,
                     POLICY_ALLOW
             );
-            log("✅ setProfileConnectionPolicy OK, ret=" + ret + ", MAC:" + WATCH_MAC);
+            log("✅ setProfileConnectionPolicy OK, ret=" + ret);
         } catch (Throwable e) {
             logErr("❌ setProfileConnectionPolicy failed", e);
         }
