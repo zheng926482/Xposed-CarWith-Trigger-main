@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace 'com.zheng926482.xposedcarwithtrigger'   // 关键：与 AndroidManifest 的 package 保持一致
+    namespace "com.watchhfp.fix"   // 关键：与 AndroidManifest 的 package 保持一致
     compileSdk 34   // 或 33，根据你的 SDK 安装情况
 
     defaultConfig {
