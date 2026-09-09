@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothDevice;
 import android.util.Log;
 
 import java.io.File;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,7 +25,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final long POLL_INTERVAL_MS = 1000;
     private static final long COOLDOWN_MS = 5000;
     private final AtomicLong lastRunTs = new AtomicLong(0);
-    private boolean dumped = false;
+    private static final AtomicBoolean dumped = new AtomicBoolean(false);
 
     private static void log(String msg) {
         Log.i(TAG, msg);
@@ -39,7 +40,6 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         log("ℹ️ Package loaded: " + lpparam.packageName);
 
-        // Hook com.miui.carlink
         if ("com.miui.carlink".equals(lpparam.packageName)) {
             log("✅ Hooked com.miui.carlink");
             XposedHelpers.findAndHookMethod("android.content.ContextWrapper", lpparam.classLoader,
@@ -75,29 +75,10 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
-        // Hook bluetooth process
         if ("com.android.bluetooth".equals(lpparam.packageName)) {
             log("✅ Hooked com.android.bluetooth");
             Class<?> adapterAppCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterApp", lpparam.classLoader);
             Class<?> adapterServiceCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterService", lpparam.classLoader);
-
-            // Dump all declared methods once
-            if(!dumped){
-                dumped = true;
-                log("----- DUMP AdapterService declared methods -----");
-                for(Method m : adapterServiceCls.getDeclaredMethods()){
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(m.getName()).append("(");
-                    Class<?>[] pts = m.getParameterTypes();
-                    for(int i=0;i<pts.length;i++){
-                        if(i>0) sb.append(",");
-                        sb.append(pts[i].getName());
-                    }
-                    sb.append("):").append(m.getReturnType().getName());
-                    log(sb.toString());
-                }
-                log("----- DUMP END -----");
-            }
 
             XposedHelpers.findAndHookMethod(adapterAppCls,
                     "onCreate",
@@ -108,6 +89,26 @@ public class MainHook implements IXposedHookLoadPackage {
                             log("✅ AdapterApp onCreate, starting poll thread");
                             new Thread(() -> {
                                 while(running.get()) {
+                                    if(dumped.compareAndSet(false, true)){
+                                        log("========== DUMP AdapterService METHODS ==========");
+                                        for(Method m : adapterServiceCls.getDeclaredMethods()){
+                                            StringBuilder sb = new StringBuilder();
+                                            sb.append(m.getName()).append("(");
+                                            Class<?>[] pts = m.getParameterTypes();
+                                            for(int i=0;i<pts.length;i++){
+                                                if(i>0) sb.append(",");
+                                                sb.append(pts[i].getName());
+                                            }
+                                            sb.append("):").append(m.getReturnType().getName());
+                                            log(sb.toString());
+                                        }
+                                        log("---------- DUMP AdapterService FIELDS ----------");
+                                        for(Field f : adapterServiceCls.getDeclaredFields()){
+                                            log(f.getType().getName() + " " + f.getName());
+                                        }
+                                        log("========== DUMP END ==========");
+                                    }
+
                                     File trigger = new File(TRIGGER_FILE);
                                     long now = System.currentTimeMillis();
                                     if (trigger.exists() && (now - lastRunTs.get()) > COOLDOWN_MS) {
@@ -155,9 +156,31 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             log("Found target device: " + targetDevice.getAddress());
 
-            // 这里先不调用，dump出来方法名之后再填正确的方法名
-            log("Will call method after checking dump list");
-
+            // 尝试两个常见名字
+            String[] candidates = {
+                    "setProfileConnectionPolicy",
+                    "setConnectionPolicy"
+            };
+            boolean ok = false;
+            for(String mName : candidates){
+                try {
+                    int ret = (int) XposedHelpers.callMethod(
+                            adapterService,
+                            mName,
+                            targetDevice,
+                            PROFILE_HEADSET,
+                            POLICY_ALLOW
+                    );
+                    log("✅ Call " + mName + " success, ret=" + ret);
+                    ok = true;
+                    break;
+                }catch (Throwable e){
+                    log("⚠️ " + mName + " failed: " + e.getMessage());
+                }
+            }
+            if(!ok){
+                logErr("❌ No candidate method succeeded", null);
+            }
         } catch (Throwable e) {
             logErr("❌ restoreWatchHfpPolicy exception", e);
         }
