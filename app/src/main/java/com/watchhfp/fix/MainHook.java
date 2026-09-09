@@ -7,6 +7,7 @@ import android.content.IntentFilter;
 import android.util.Log;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
@@ -19,12 +20,21 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final int PROFILE_HEADSET = 1;
     private static final int POLICY_ALLOW = 100;
 
+    private static void log(String msg) {
+        Log.i(TAG, msg);
+        XposedBridge.log(TAG + ": " + msg);
+    }
+    private static void logErr(String msg, Throwable t) {
+        Log.e(TAG, msg, t);
+        XposedBridge.log(TAG + ": ERROR " + msg + " : " + t.getMessage());
+    }
+
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!"com.android.bluetooth".equals(lpparam.packageName)) {
             return;
         }
-        Log.i(TAG,"✅ Module loaded into com.android.bluetooth");
+        log("✅ Module loaded into com.android.bluetooth");
 
         XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
                 "onCreate", new de.robv.android.xposed.XC_MethodHook() {
@@ -35,11 +45,11 @@ public class MainHook implements IXposedHookLoadPackage {
                         btContext.registerReceiver(new BroadcastReceiver() {
                             @Override
                             public void onReceive(Context context, Intent intent) {
-                                Log.i(TAG,"📢 Receive CarWith disconnect broadcast, restore watch HFP");
+                                log("📢 Receive CarWith disconnect broadcast, restore watch HFP");
                                 restoreWatchHfpPolicy(btContext.getClassLoader());
                             }
                         }, filter, Context.RECEIVER_EXPORTED);
-                        Log.i(TAG,"✅ Broadcast receiver registered, action="+CARWITH_DISCONNECT_ACTION);
+                        log("✅ Broadcast receiver registered, action="+CARWITH_DISCONNECT_ACTION);
                     }
                 });
     }
@@ -55,9 +65,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     int.class
             );
             setPolicyMethod.invoke(dbInstance, WATCH_MAC, PROFILE_HEADSET, POLICY_ALLOW);
-            Log.i(TAG,"✅ SUCCESS setProfileConnectionPolicy mac="+WATCH_MAC+" policy="+POLICY_ALLOW);
+            log("✅ SUCCESS setProfileConnectionPolicy mac="+WATCH_MAC+" policy="+POLICY_ALLOW);
         } catch (Throwable e) {
-            Log.e(TAG,"❌ FAILED invoke setProfileConnectionPolicy", e);
+            logErr("❌ FAILED invoke setProfileConnectionPolicy", e);
         }
     }
 }
