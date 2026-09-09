@@ -2,7 +2,7 @@ package com.watchhfp.fix;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothProfile; // ← 新增这一行！
+import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.util.Log;
 
@@ -144,8 +144,12 @@ public class MainHook implements IXposedHookLoadPackage {
                 log("===== DUMP END =====");
             }
 
-            // 尝试直接发起HFP连接
-            boolean connectOk = targetDevice.connectProfile(BluetoothProfile.HEADSET);
+            // 反射调用 connectProfile（隐藏API，编译期不可见）
+            boolean connectOk = (boolean) XposedHelpers.callMethod(
+                    targetDevice,
+                    "connectProfile",
+                    BluetoothProfile.HEADSET
+            );
             log("📡 targetDevice.connectProfile HEADSET result=" + connectOk);
 
         } catch (Throwable e) {
