@@ -2,10 +2,10 @@ package com.watchhfp.fix;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
+import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -24,6 +24,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final long POLL_INTERVAL_MS = 1000;
     private static final long COOLDOWN_MS = 5000;
     private final AtomicLong lastRunTs = new AtomicLong(0);
+    private boolean dumped = false;
 
     private static void log(String msg) {
         Log.i(TAG, msg);
@@ -80,6 +81,24 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> adapterAppCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterApp", lpparam.classLoader);
             Class<?> adapterServiceCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterService", lpparam.classLoader);
 
+            // Dump all declared methods once
+            if(!dumped){
+                dumped = true;
+                log("----- DUMP AdapterService declared methods -----");
+                for(Method m : adapterServiceCls.getDeclaredMethods()){
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(m.getName()).append("(");
+                    Class<?>[] pts = m.getParameterTypes();
+                    for(int i=0;i<pts.length;i++){
+                        if(i>0) sb.append(",");
+                        sb.append(pts[i].getName());
+                    }
+                    sb.append("):").append(m.getReturnType().getName());
+                    log(sb.toString());
+                }
+                log("----- DUMP END -----");
+            }
+
             XposedHelpers.findAndHookMethod(adapterAppCls,
                     "onCreate",
                     new de.robv.android.xposed.XC_MethodHook() {
@@ -103,7 +122,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     }
                                 }
                                 log("ℹ️ Poll thread exit");
-                            },"WatchHfpPoll").start();
+                            }, "WatchHfpPoll").start();
                         }
                     });
             return;
@@ -121,8 +140,11 @@ public class MainHook implements IXposedHookLoadPackage {
             BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
             BluetoothDevice targetDevice = null;
             Set<BluetoothDevice> paired = btAdapter.getBondedDevices();
+            log("Paired devices count: " + paired.size());
             for(BluetoothDevice dev : paired){
-                if(WATCH_MAC.equals(dev.getAddress())){
+                String mac = dev.getAddress();
+                log("Paired: " + mac);
+                if(WATCH_MAC.equals(mac)){
                     targetDevice = dev;
                     break;
                 }
@@ -131,17 +153,13 @@ public class MainHook implements IXposedHookLoadPackage {
                 logErr("Paired device not found: " + WATCH_MAC, null);
                 return;
             }
+            log("Found target device: " + targetDevice.getAddress());
 
-            int ret = (int) XposedHelpers.callMethod(
-                    adapterService,
-                    "setProfileConnectionPolicy",
-                    targetDevice,
-                    PROFILE_HEADSET,
-                    POLICY_ALLOW
-            );
-            log("✅ setProfileConnectionPolicy OK, ret=" + ret);
+            // 这里先不调用，dump出来方法名之后再填正确的方法名
+            log("Will call method after checking dump list");
+
         } catch (Throwable e) {
-            logErr("❌ setProfileConnectionPolicy failed", e);
+            logErr("❌ restoreWatchHfpPolicy exception", e);
         }
     }
 }
