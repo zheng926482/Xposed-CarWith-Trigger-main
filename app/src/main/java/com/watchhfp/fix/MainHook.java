@@ -6,6 +6,7 @@ import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
+import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -19,12 +20,11 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "CarWithHfpFix";
     private static final String WATCH_MAC = "04:24:05:2B:3D:1A";
     private static final String TRIGGER_FILE = "/data/local/tmp/watch_hfp_trigger";
-    private static final int PROFILE_HEADSET = 1;
-    private static final int POLICY_ALLOW = 100;
     private static final long POLL_INTERVAL_MS = 1000;
     private static final long COOLDOWN_MS = 5000;
     private final AtomicLong lastRunTs = new AtomicLong(0);
     private final AtomicBoolean threadStarted = new AtomicBoolean(false);
+    private static final AtomicBoolean dumped = new AtomicBoolean(false);
 
     private static void log(String msg) {
         Log.i(TAG, msg);
@@ -42,7 +42,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
         log("✅ Hooked into com.miui.carlink");
 
-        // 启动轮询线程（CarWith进程内）
         XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
                 "onCreate",
                 new de.robv.android.xposed.XC_MethodHook() {
@@ -58,7 +57,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                         log("🧪 Trigger file detected, run restoreHfp");
                                         restoreHfp();
                                         lastRunTs.set(now);
-                                        // 自动清理触发器
                                         try {
                                             trigger.delete();
                                             log("✅ Trigger file deleted");
@@ -78,7 +76,6 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // 真实场景：捕获ICCOA断开广播
         XposedHelpers.findAndHookMethod("android.content.ContextWrapper", lpparam.classLoader,
                 "sendBroadcast",
                 "android.content.Intent",
@@ -117,15 +114,38 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             log("✅ Found watch device: " + WATCH_MAC);
 
-            // 反射调用 setProfileConnectionPolicy
-            int ret = (int) XposedHelpers.callMethod(
-                    btAdapter,
-                    "setProfileConnectionPolicy",
-                    targetDevice,
-                    PROFILE_HEADSET,
-                    POLICY_ALLOW
-            );
-            log("✅ setProfileConnectionPolicy success, ret=" + ret);
+            // 只执行一次Dump
+            if(dumped.compareAndSet(false,true)){
+                log("===== DUMP BluetoothAdapter METHODS =====");
+                for(Method m : btAdapter.getClass().getDeclaredMethods()){
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(m.getName()).append("(");
+                    Class<?>[] pts = m.getParameterTypes();
+                    for(int i=0;i<pts.length;i++){
+                        if(i>0) sb.append(",");
+                        sb.append(pts[i].getName());
+                    }
+                    sb.append("):").append(m.getReturnType().getName());
+                    log(sb.toString());
+                }
+                log("===== DUMP BluetoothDevice METHODS =====");
+                for(Method m : targetDevice.getClass().getDeclaredMethods()){
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(m.getName()).append("(");
+                    Class<?>[] pts = m.getParameterTypes();
+                    for(int i=0;i<pts.length;i++){
+                        if(i>0) sb.append(",");
+                        sb.append(pts[i].getName());
+                    }
+                    sb.append("):").append(m.getReturnType().getName());
+                    log(sb.toString());
+                }
+                log("===== DUMP END =====");
+            }
+
+            // 尝试直接发起HFP连接（备选方案，不再用setProfileConnectionPolicy）
+            boolean connectOk = targetDevice.connectProfile(BluetoothProfile.HEADSET);
+            log("📡 targetDevice.connectProfile HEADSET result=" + connectOk);
 
         } catch (Throwable e) {
             logErr("❌ restoreHfp failed", e);
