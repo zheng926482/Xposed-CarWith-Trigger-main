@@ -115,7 +115,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             log("✅ Found watch device: " + WATCH_MAC);
 
-            // 只执行一次Dump
+            // ========= 【移到最前面】优先Dump，就算后面调用报错，Dump日志一定输出 =========
             if(dumped.compareAndSet(false,true)){
                 log("===== DUMP BluetoothAdapter METHODS =====");
                 for(Method m : btAdapter.getClass().getDeclaredMethods()){
@@ -144,13 +144,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 log("===== DUMP END =====");
             }
 
-            // 反射调用 connectProfile（隐藏API，编译期不可见）
-            boolean connectOk = (boolean) XposedHelpers.callMethod(
-                    targetDevice,
-                    "connectProfile",
-                    BluetoothProfile.HEADSET
-            );
-            log("📡 targetDevice.connectProfile HEADSET result=" + connectOk);
+            // 尝试反射 connectProfile（大概率方法签名不对，等dump结果再替换）
+            log("🔍 Try reflect connectProfile");
+            Object ret = XposedHelpers.callMethod(targetDevice, "connectProfile", BluetoothProfile.HEADSET);
+            log("📡 connectProfile return: " + ret);
 
         } catch (Throwable e) {
             logErr("❌ restoreHfp failed", e);
