@@ -2,6 +2,7 @@ package com.watchhfp.fix;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothProfile; // ← 新增这一行！
 import android.content.Context;
 import android.util.Log;
 
@@ -46,7 +47,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 "onCreate",
                 new de.robv.android.xposed.XC_MethodHook() {
                     @Override
-                    protected void afterHookedMethod(de.robv.android.xposed.XC_MethodHook.MethodHookParam param) {
+                    protected void afterHookedMethod(MethodHookParam param) {
                         if (threadStarted.compareAndSet(false, true)) {
                             log("✅ Start poll thread inside com.miui.carlink");
                             new Thread(() -> {
@@ -81,7 +82,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 "android.content.Intent",
                 new de.robv.android.xposed.XC_MethodHook() {
                     @Override
-                    protected void beforeHookedMethod(de.robv.android.xposed.XC_MethodHook.MethodHookParam param) {
+                    protected void beforeHookedMethod(MethodHookParam param) {
                         Object intentObj = param.args[0];
                         String action = (String) XposedHelpers.callMethod(intentObj, "getAction");
                         if ("com.iccoa.carlink.DISCONNECT".equals(action)) {
@@ -143,7 +144,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 log("===== DUMP END =====");
             }
 
-            // 尝试直接发起HFP连接（备选方案，不再用setProfileConnectionPolicy）
+            // 尝试直接发起HFP连接
             boolean connectOk = targetDevice.connectProfile(BluetoothProfile.HEADSET);
             log("📡 targetDevice.connectProfile HEADSET result=" + connectOk);
 
