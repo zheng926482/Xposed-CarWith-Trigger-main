@@ -1,6 +1,5 @@
 package com.watchhfp.fix;
 
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.util.Log;
@@ -16,8 +15,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "CarWithHfpFix";
-    private static final String WATCH_MAC_LOWER = "04:24:05:2B:3D:1A";
-    private static final String WATCH_MAC = WATCH_MAC_LOWER.toUpperCase();
+    private static final String WATCH_MAC = "04:24:05:2B:3D:1A";
     private static final String TRIGGER_FILE = "/data/local/tmp/watch_hfp_trigger";
     private static final int PROFILE_HEADSET = 1;
     private static final int POLICY_ALLOW = 100;
@@ -58,7 +56,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                                 "touch " + TRIGGER_FILE
                                         }).waitFor();
                                         log("✅ Trigger file created");
-                                        // 5.5s 后清除触发器
                                         Thread.sleep(5500);
                                         Runtime.getRuntime().exec(new String[]{
                                                 "su", "-c",
@@ -75,10 +72,12 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
-        // ========== 2. Hook com.android.bluetooth.AdapterApp ==========
+        // ========== 2. Hook com.android.bluetooth ==========
         if ("com.android.bluetooth".equals(lpparam.packageName)) {
             log("✅ Hooked com.android.bluetooth");
             Class<?> adapterAppCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterApp", lpparam.classLoader);
+            Class<?> adapterServiceCls = XposedHelpers.findClass("com.android.bluetooth.btservice.AdapterService", lpparam.classLoader);
+
             XposedHelpers.findAndHookMethod(adapterAppCls,
                     "onCreate",
                     new de.robv.android.xposed.XC_MethodHook() {
@@ -92,7 +91,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     long now = System.currentTimeMillis();
                                     if (trigger.exists() && (now - lastRunTs.get()) > COOLDOWN_MS) {
                                         log("🎯 Trigger file detected, restore HFP, MAC=" + WATCH_MAC);
-                                        restoreWatchHfpPolicy();
+                                        restoreWatchHfpPolicy(lpparam.classLoader, adapterServiceCls);
                                         lastRunTs.set(now);
                                     }
                                     try {
@@ -109,21 +108,29 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void restoreWatchHfpPolicy() {
+    private void restoreWatchHfpPolicy(ClassLoader cl, Class<?> adapterServiceCls) {
         try {
-            BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
-            if (btAdapter == null) {
-                logErr("btAdapter is null", null);
+            // 获取 AdapterService 单例: AdapterService.getAdapterService()
+            Object adapterService = XposedHelpers.callStaticMethod(adapterServiceCls, "getAdapterService");
+            if (adapterService == null) {
+                logErr("AdapterService instance is null", null);
                 return;
             }
-            BluetoothDevice device = btAdapter.getRemoteDevice(WATCH_MAC);
-            XposedHelpers.callMethod(btAdapter,
+            // 构造 BluetoothDevice
+            Object device = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("android.bluetooth.BluetoothDevice", cl),
+                    "getRemoteDevice",
+                    WATCH_MAC
+            );
+            // 调用内部方法 setProfileConnectionPolicy
+            int ret = (int) XposedHelpers.callMethod(
+                    adapterService,
                     "setProfileConnectionPolicy",
                     device,
                     PROFILE_HEADSET,
                     POLICY_ALLOW
             );
-            log("✅ setProfileConnectionPolicy OK, MAC:" + WATCH_MAC);
+            log("✅ setProfileConnectionPolicy OK, ret=" + ret + ", MAC:" + WATCH_MAC);
         } catch (Throwable e) {
             logErr("❌ setProfileConnectionPolicy failed", e);
         }
