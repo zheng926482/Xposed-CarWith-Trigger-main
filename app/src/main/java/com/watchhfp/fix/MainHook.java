@@ -6,8 +6,8 @@ import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XposedBridge;
@@ -16,11 +16,14 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "CarWithHfpFix";
-    private static final String WATCH_MAC = "04:24:05:2b:3d:1a";
+    private static final String WATCH_MAC_LOWER = "04:24:05:2b:3d:1a";
+    private static final String WATCH_MAC = WATCH_MAC_LOWER.toUpperCase();
     private static final String TRIGGER_FILE = "/data/local/tmp/watch_hfp_trigger";
     private static final int PROFILE_HEADSET = 1;
     private static final int POLICY_ALLOW = 100;
-    private static final long POLL_INTERVAL_MS = 500;
+    private static final long POLL_INTERVAL_MS = 1000;
+    private static final long COOLDOWN_MS = 5000;
+    private final AtomicLong lastRunTs = new AtomicLong(0);
 
     private static void log(String msg) {
         Log.i(TAG, msg);
@@ -28,7 +31,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
     private static void logErr(String msg, Throwable t) {
         Log.e(TAG, msg, t);
-        XposedBridge.log(TAG + ": ERROR " + msg + " : " + t.getMessage());
+        XposedBridge.log(TAG + ": ERROR " + msg + " : " + (t != null ? t.getMessage() : ""));
     }
 
     @Override
@@ -55,8 +58,15 @@ public class MainHook implements IXposedHookLoadPackage {
                                                 "touch " + TRIGGER_FILE
                                         }).waitFor();
                                         log("✅ Trigger file created");
+                                        // 5.5s 后清除触发器
+                                        Thread.sleep(5500);
+                                        Runtime.getRuntime().exec(new String[]{
+                                                "su", "-c",
+                                                "rm -f " + TRIGGER_FILE
+                                        }).waitFor();
+                                        log("✅ Trigger file removed by carlink");
                                     } catch (Exception e) {
-                                        logErr("❌ Failed to create trigger file", e);
+                                        logErr("❌ File op failed in carlink", e);
                                     }
                                 }).start();
                             }
@@ -79,10 +89,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             new Thread(() -> {
                                 while(running.get()) {
                                     File trigger = new File(TRIGGER_FILE);
-                                    if (trigger.exists()) {
-                                        log("🎯 Trigger file detected, restore HFP");
+                                    long now = System.currentTimeMillis();
+                                    if (trigger.exists() && (now - lastRunTs.get()) > COOLDOWN_MS) {
+                                        log("🎯 Trigger file detected, restore HFP, MAC=" + WATCH_MAC);
                                         restoreWatchHfpPolicy();
-                                        // 不再在这里su删除！删除交给carlink或者外部
+                                        lastRunTs.set(now);
                                     }
                                     try {
                                         Thread.sleep(POLL_INTERVAL_MS);
@@ -98,10 +109,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 使用公开API BluetoothAdapter.setProfileConnectionPolicy
-     * 不需要内部BluetoothDatabaseManager
-     */
     private void restoreWatchHfpPolicy() {
         try {
             BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
@@ -110,14 +117,13 @@ public class MainHook implements IXposedHookLoadPackage {
                 return;
             }
             BluetoothDevice device = btAdapter.getRemoteDevice(WATCH_MAC);
-            // 反射调用 setProfileConnectionPolicy，该方法是 @hide
             XposedHelpers.callMethod(btAdapter,
                     "setProfileConnectionPolicy",
                     device,
                     PROFILE_HEADSET,
                     POLICY_ALLOW
             );
-            log("✅ setProfileConnectionPolicy OK via BluetoothAdapter, MAC:" + WATCH_MAC);
+            log("✅ setProfileConnectionPolicy OK, MAC:" + WATCH_MAC);
         } catch (Throwable e) {
             logErr("❌ setProfileConnectionPolicy failed", e);
         }
