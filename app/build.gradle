@@ -7,7 +7,7 @@ android {
     compileSdk 34   // 或 33，根据你的 SDK 安装情况
 
     defaultConfig {
-        applicationId "com.zheng926482.xposedcarwithtrigger"
+        applicationId "com.watchhfp.fix"
         minSdk 21
         targetSdk 34
         versionCode 1
